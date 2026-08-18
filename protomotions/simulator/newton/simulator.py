@@ -134,6 +134,7 @@ class NewtonSimulator(Simulator):
         self._contact_forces = {}  # Store contact forces per body
         self.contacts = None  # Initialized after solver/sensors are set up
         self._camera_initialized = False
+        self._viser_recenter_requested = False
 
     def _create_simulation(self) -> None:
         """Create the Newton simulation environment."""
@@ -505,6 +506,7 @@ class NewtonSimulator(Simulator):
                 self.viewer = newton.viewer.ViewerViser(
                     port=self.config.viewer_port, share=self.config.viewer_share
                 )
+                self._add_viser_recenter_button()
             else:
                 self.viewer = newton.viewer.ViewerGL()
                 self.viewer.vsync = True
@@ -1247,6 +1249,22 @@ class NewtonSimulator(Simulator):
         )
 
     # ===== Group 6: Rendering & Visualization =====
+    def _add_viser_recenter_button(self) -> None:
+        """Add a "Focus Camera" GUI button to the viser viewer.
+
+        Since viser (unlike ViewerGL) doesn't auto-follow the character every
+        frame -- see the camera dispatch in render() -- this gives users a way
+        to snap the view back onto the character, e.g. after an env reset
+        spawns it far from the current camera position. on_click callbacks run
+        on a viser-managed thread pool, so we only flip a flag here; the actual
+        recenter runs on the main thread in render().
+        """
+        server = getattr(self.viewer, "_server", None)
+        if server is None:
+            return
+        button = server.gui.add_button("Focus Camera", hint="Recenter the camera on the tracked character")
+        button.on_click(lambda _: setattr(self, "_viser_recenter_requested", True))
+
     def _init_camera(self) -> None:
         """Initializes camera."""
         char_root_pos = (
@@ -1270,7 +1288,6 @@ class NewtonSimulator(Simulator):
 
         self.viewer.set_camera(wp.vec3(cam_pos.tolist()), pitch, yaw)
         self._cam_prev_char_pos = char_root_pos
-        self._last_cam_pos = cam_pos
 
     def _init_keyboard(self) -> None:
         """Initializes keyboard controls."""
@@ -1297,13 +1314,7 @@ class NewtonSimulator(Simulator):
             )
             height_offset = 0
 
-        # ViewerGL exposes a live `.camera` we can read back to respect manual
-        # free-fly drift; ViewerViser (and ViewerBase) have no such attribute,
-        # so fall back to the last position we ourselves commanded.
-        if hasattr(self.viewer, "camera"):
-            cam_pos = np.array(self.viewer.camera.pos)
-        else:
-            cam_pos = self._last_cam_pos
+        cam_pos = np.array(self.viewer.camera.pos)
         cam_delta = cam_pos - self._cam_prev_char_pos
 
         new_cam_target = char_root_pos + np.array([0, 0, height_offset])
@@ -1320,7 +1331,6 @@ class NewtonSimulator(Simulator):
 
         self.viewer.set_camera(wp.vec3(new_cam_pos.tolist()), pitch, yaw)
         self._cam_prev_char_pos = char_root_pos
-        self._last_cam_pos = new_cam_pos
 
     def close(self) -> None:
         """Closes the simulator and cleans up resources."""
@@ -1337,8 +1347,20 @@ class NewtonSimulator(Simulator):
             if not self._camera_initialized:
                 self._init_camera()
                 self._camera_initialized = True
-            else:
+            elif hasattr(self.viewer, "camera"):
+                # Only ViewerGL exposes a live `.camera` we can read back to
+                # follow the target while respecting manual free-fly drift.
+                # Backends without it (e.g. viser) own the camera entirely
+                # via their own browser-side controls once initialized, so we
+                # never re-command it and fight the user's drag/zoom/pan.
                 self._update_camera()
+            elif self._viser_recenter_requested:
+                # User clicked the "Focus Camera" button (see
+                # _add_viser_recenter_button); snap the view back onto the
+                # tracked character, e.g. after an env reset spawns it far
+                # from the current camera position.
+                self._init_camera()
+                self._viser_recenter_requested = False
 
             # is_key_down() defaults to False on viewer backends without real
             # keyboard input (e.g. viser), so shortcuts simply no-op there.

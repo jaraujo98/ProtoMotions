@@ -259,7 +259,11 @@ window — view it from any browser, including over an SSH port-forward. Set
 few known gaps versus the native ``gl`` viewer: keyboard shortcuts (camera-target cycling,
 recording toggle, projectile throw, marker toggle) and mouse-drag force interaction are
 inert, and the PNG/MP4 viewport recording hotkey is unsupported (viser has its own separate
-recording format instead).
+recording format instead). The camera is positioned once when the viewer connects and is
+then fully under your browser's own orbit/zoom/pan controls — unlike ``gl``, it does not
+automatically follow the character. If the character ends up out of view (e.g. it spawns
+far from the origin, or the position changes on an env reset), click the "Focus Camera"
+button in the viser GUI panel to snap the view back onto it.
 
 MuJoCo (CPU-only)
 ~~~~~~~~~~~~~~~~~

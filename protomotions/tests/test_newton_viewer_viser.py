@@ -4,14 +4,17 @@
 """Tests for the Newton simulator's viser viewer backend support.
 
 These exercise the viewer_backend config option and the NewtonSimulator methods
-that had to be made viewer-agnostic (close, _write_viewport_to_file,
-_update_camera) so ViewerViser can be used in place of ViewerGL. Unlike
-ViewerGL, ViewerViser only starts a local web server, so these tests need no
-display and no Xvfb.
+that had to be made viewer-agnostic (close, _write_viewport_to_file, and
+render()'s camera-update dispatch) so ViewerViser can be used in place of
+ViewerGL. ViewerViser has no live, locally-readable `.camera` like ViewerGL
+does, so render() only positions the camera once and otherwise leaves it
+under the browser's own orbit/zoom/pan controls rather than fighting them.
+Unlike ViewerGL, ViewerViser only starts a local web server, so these tests
+need no display and no Xvfb.
 """
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -116,7 +119,108 @@ def test_write_viewport_to_file_uses_get_frame_when_available(tmp_path):
     assert out_file.exists()
 
 
-def test_update_camera_falls_back_to_last_commanded_pos_without_camera_attr():
+def test_add_viser_recenter_button_registers_click_handler():
+    NewtonSimulator = _newton_simulator_cls()
+    mock_self = MagicMock()
+    mock_self._viser_recenter_requested = False
+    mock_button = MagicMock()
+    mock_server = MagicMock()
+    mock_server.gui.add_button.return_value = mock_button
+    mock_self.viewer = MagicMock(spec=["_server"])
+    mock_self.viewer._server = mock_server
+
+    NewtonSimulator._add_viser_recenter_button(mock_self)
+
+    mock_server.gui.add_button.assert_called_once()
+    assert mock_server.gui.add_button.call_args[0][0] == "Focus Camera"
+    on_click_callback = mock_button.on_click.call_args[0][0]
+
+    on_click_callback(MagicMock())  # simulate the button being clicked
+
+    assert mock_self._viser_recenter_requested is True
+
+
+def test_add_viser_recenter_button_noop_without_server():
+    NewtonSimulator = _newton_simulator_cls()
+    mock_self = MagicMock()
+    mock_self.viewer = MagicMock(spec=[])  # no `_server` attribute, like ViewerGL
+
+    NewtonSimulator._add_viser_recenter_button(mock_self)  # must not raise
+
+
+def _make_render_mock_self(NewtonSimulator, viewer_spec, recenter_requested=False):
+    """Build a MagicMock `self` that real, unmocked NewtonSimulator.render()
+    (and its super().render() call) can run against safely. Spoofing
+    `__class__` makes `isinstance`/`super()` treat it as a real
+    NewtonSimulator, while attribute access still auto-mocks like a normal
+    MagicMock (so e.g. `self._update_camera()` calls are simply recorded).
+    """
+    mock_self = MagicMock()
+    mock_self.__class__ = NewtonSimulator
+    mock_self.headless = False
+    mock_self._camera_initialized = True
+    mock_self._viser_recenter_requested = recenter_requested
+    mock_self.viewer = MagicMock(spec=viewer_spec)
+    mock_self.user_interface.registered_key_names.return_value = []
+    return mock_self
+
+
+def test_render_skips_update_camera_for_viewers_without_camera_attr():
+    """ViewerViser has no `.camera`, so render() must not re-command the
+    camera every frame and fight the user's in-browser drag/zoom/pan."""
+    NewtonSimulator = _newton_simulator_cls()
+    from protomotions.simulator.base_simulator.record import RecordingMixin
+
+    mock_self = _make_render_mock_self(
+        NewtonSimulator, viewer_spec=["begin_frame", "log_state", "end_frame", "is_key_down"]
+    )
+
+    with patch.object(RecordingMixin, "render"):
+        NewtonSimulator.render(mock_self)
+
+    mock_self._update_camera.assert_not_called()
+    mock_self._init_camera.assert_not_called()
+
+
+def test_render_recenters_on_viser_when_button_clicked():
+    """Clicking the "Focus Camera" button sets _viser_recenter_requested;
+    render() should consume it by re-running _init_camera() once and
+    clearing the flag, without touching _update_camera (still GL-only)."""
+    NewtonSimulator = _newton_simulator_cls()
+    from protomotions.simulator.base_simulator.record import RecordingMixin
+
+    mock_self = _make_render_mock_self(
+        NewtonSimulator,
+        viewer_spec=["begin_frame", "log_state", "end_frame", "is_key_down"],
+        recenter_requested=True,
+    )
+
+    with patch.object(RecordingMixin, "render"):
+        NewtonSimulator.render(mock_self)
+
+    mock_self._init_camera.assert_called_once_with()
+    mock_self._update_camera.assert_not_called()
+    assert mock_self._viser_recenter_requested is False
+
+
+def test_render_calls_update_camera_for_viewers_with_camera_attr():
+    """ViewerGL exposes a live `.camera`, so render() should keep following
+    the target via _update_camera() as before."""
+    NewtonSimulator = _newton_simulator_cls()
+    from protomotions.simulator.base_simulator.record import RecordingMixin
+
+    mock_self = _make_render_mock_self(
+        NewtonSimulator,
+        viewer_spec=["camera", "begin_frame", "log_state", "end_frame", "is_key_down"],
+    )
+
+    with patch.object(RecordingMixin, "render"):
+        NewtonSimulator.render(mock_self)
+
+    mock_self._update_camera.assert_called_once_with()
+
+
+def test_update_camera_reads_live_camera_pos():
     NewtonSimulator = _newton_simulator_cls()
     mock_self = MagicMock()
     mock_self._camera_target = {"element": 0, "env": 0}
@@ -124,13 +228,15 @@ def test_update_camera_falls_back_to_last_commanded_pos_without_camera_attr():
         root_pos=torch.tensor([[1.0, 2.0, 0.5]])
     )
     mock_self._cam_prev_char_pos = np.array([0.0, 0.0, 0.0])
-    mock_self._last_cam_pos = np.array([0.0, -5.0, 1.0])
-    mock_self.viewer = MagicMock(spec=["set_camera"])  # no `.camera` attribute, like ViewerViser
+    mock_self.viewer = MagicMock(spec=["camera", "set_camera"])
+    mock_self.viewer.camera.pos = np.array([0.0, -5.0, 1.0])
 
     NewtonSimulator._update_camera(mock_self)
 
     mock_self.viewer.set_camera.assert_called_once()
-    assert np.allclose(mock_self._last_cam_pos, [1.0, -3.0, 1.5])
+    # cam_delta (from viewer.camera.pos) is preserved onto the new char pos.
+    new_cam_pos = np.asarray(mock_self.viewer.set_camera.call_args[0][0])
+    assert np.allclose(new_cam_pos, [1.0, -3.0, 1.5])
 
 
 def test_viewer_viser_matches_expected_upstream_api():
