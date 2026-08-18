@@ -2,12 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+import threading
 import torch
 import numpy as np
 from typing import Dict, List, Optional, Tuple
 
 from protomotions.assets import resolve_asset_root
 from protomotions.simulator.base_simulator.simulator import Simulator
+from protomotions.simulator.base_simulator.user_interface import KeyBinding
 from protomotions.simulator.base_simulator.config import (
     MarkerState,
     VisualizationMarkerConfig,
@@ -135,6 +137,12 @@ class NewtonSimulator(Simulator):
         self.contacts = None  # Initialized after solver/sensors are set up
         self._camera_initialized = False
         self._viser_recenter_requested = False
+
+        # Keys "pressed" via viser GUI buttons (see _add_viser_key_button) land
+        # here from viser's connection-handling thread; render() drains them on
+        # the main thread. Stays empty (and unused) on the ViewerGL backend.
+        self._viser_pending_presses: set = set()
+        self._viser_pending_lock = threading.Lock()
 
     def _create_simulation(self) -> None:
         """Create the Newton simulation environment."""
@@ -525,6 +533,7 @@ class NewtonSimulator(Simulator):
                     port=self.config.viewer_port, share=self.config.viewer_share
                 )
                 self._add_viser_recenter_button()
+                self._setup_viser_key_buttons()
             else:
                 self.viewer = newton.viewer.ViewerGL()
                 self.viewer.vsync = True
@@ -1359,6 +1368,47 @@ class NewtonSimulator(Simulator):
         """Writes viewport to file."""
         pass
 
+    def _setup_viser_key_buttons(self) -> None:
+        """Mirrors every UserInterface key as a clickable button in the viser GUI.
+
+        ViewerViser has no real keyboard capture (is_key_down() always returns
+        False), so keyboard shortcuts are otherwise inert on this backend.
+        """
+        folder = self.viewer._server.gui.add_folder("Keyboard Shortcuts")
+        self._viser_shortcuts_folder = folder
+        self.user_interface.add_registration_callback(
+            self._add_viser_key_button, replay_existing=True
+        )
+
+    def _add_viser_key_button(self, handle: KeyBinding) -> None:
+        # GuiFolderHandle has no add_button of its own -- entering it as a
+        # context manager retargets where server.gui.add_button() lands.
+        with self._viser_shortcuts_folder:
+            button = self.viewer._server.gui.add_button(
+                f"{handle.key}: {handle.description}"
+            )
+
+        @button.on_click
+        def _(_, key=handle.key) -> None:
+            # Runs on viser's connection-handling thread: only touch the
+            # lock-guarded pending set here, never UserInterface directly.
+            with self._viser_pending_lock:
+                self._viser_pending_presses.add(key)
+
+    def _is_key_pressed(self, key_name: str) -> bool:
+        """Combines the viewer's real key state with any pending viser button click.
+
+        is_key_down() defaults to False on viewer backends without real
+        keyboard input (e.g. viser); _viser_pending_presses fills the gap with
+        clicks from the GUI buttons set up in _setup_viser_key_buttons.
+        """
+        pressed = self.viewer.is_key_down(key_name.lower())
+        with self._viser_pending_lock:
+            if key_name in self._viser_pending_presses:
+                self._viser_pending_presses.discard(key_name)
+                pressed = True
+        return pressed
+
     def render(self) -> None:
         """Renders the current simulation state."""
         if not self.headless:
@@ -1380,11 +1430,9 @@ class NewtonSimulator(Simulator):
                 self._init_camera()
                 self._viser_recenter_requested = False
 
-            # is_key_down() defaults to False on viewer backends without real
-            # keyboard input (e.g. viser), so shortcuts simply no-op there.
             for key_name in self.user_interface.registered_key_names():
                 self.user_interface.handle_key_event(
-                    key_name, pressed=self.viewer.is_key_down(key_name.lower())
+                    key_name, pressed=self._is_key_pressed(key_name)
                 )
 
             self.viewer.begin_frame(self.sim_time)

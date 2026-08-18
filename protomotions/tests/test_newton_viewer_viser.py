@@ -13,6 +13,7 @@ Unlike ViewerGL, ViewerViser only starts a local web server, so these tests
 need no display and no Xvfb.
 """
 
+import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -310,6 +311,131 @@ def test_update_camera_reads_live_camera_pos():
     # cam_delta (from viewer.camera.pos) is preserved onto the new char pos.
     new_cam_pos = np.asarray(mock_self.viewer.set_camera.call_args[0][0])
     assert np.allclose(new_cam_pos, [1.0, -3.0, 1.5])
+
+
+def test_add_viser_key_button_creates_button_with_key_and_description():
+    from protomotions.simulator.base_simulator.user_interface import UserInterface
+
+    NewtonSimulator = _newton_simulator_cls()
+    mock_self = MagicMock()
+    mock_self._viser_shortcuts_folder = MagicMock()  # supports `with folder:` out of the box
+    button = MagicMock()
+    mock_self.viewer._server.gui.add_button.return_value = button
+    mock_self._viser_pending_presses = set()
+    mock_self._viser_pending_lock = threading.Lock()
+
+    ui = UserInterface()
+    handle = ui.register_key("R", owner="test", description="Reset all environments")
+
+    NewtonSimulator._add_viser_key_button(mock_self, handle)
+
+    # GuiFolderHandle has no add_button of its own; the real button is added
+    # via server.gui.add_button() while the folder is entered as a context
+    # manager (which retargets where it lands).
+    mock_self._viser_shortcuts_folder.__enter__.assert_called_once()
+    mock_self.viewer._server.gui.add_button.assert_called_once_with(
+        "R: Reset all environments"
+    )
+    # The on_click decorator was used to register the callback.
+    button.on_click.assert_called_once()
+    on_click_callback = button.on_click.call_args[0][0]
+
+    on_click_callback(None)
+
+    assert mock_self._viser_pending_presses == {"R"}
+
+
+def test_setup_viser_key_buttons_replays_existing_and_future_keys():
+    from protomotions.simulator.base_simulator.user_interface import UserInterface
+
+    NewtonSimulator = _newton_simulator_cls()
+    mock_self = MagicMock()
+    ui = UserInterface()
+    ui.register_key("Q", owner="simulator", description="Close simulator viewer")
+    mock_self.user_interface = ui
+    mock_self.viewer = MagicMock()
+    folder = MagicMock()
+    mock_self.viewer._server.gui.add_folder.return_value = folder
+    added_labels = []
+
+    def fake_add_viser_key_button(handle):
+        added_labels.append(handle.key)
+
+    mock_self._add_viser_key_button = fake_add_viser_key_button
+
+    NewtonSimulator._setup_viser_key_buttons(mock_self)
+
+    assert added_labels == ["Q"]  # replay_existing picked up the pre-registered key
+
+    ui.register_key("M", owner="simulator", description="Toggle markers")
+
+    assert added_labels == ["Q", "M"]  # future registrations are also mirrored
+    mock_self.viewer._server.gui.add_folder.assert_called_once_with(
+        "Keyboard Shortcuts"
+    )
+
+
+def test_is_key_pressed_reads_real_key_state():
+    NewtonSimulator = _newton_simulator_cls()
+    mock_self = MagicMock()
+    mock_self.viewer.is_key_down.return_value = True
+    mock_self._viser_pending_presses = set()
+    mock_self._viser_pending_lock = threading.Lock()
+
+    assert NewtonSimulator._is_key_pressed(mock_self, "Q") is True
+    mock_self.viewer.is_key_down.assert_called_once_with("q")
+
+
+def test_is_key_pressed_drains_pending_viser_click_as_one_shot():
+    NewtonSimulator = _newton_simulator_cls()
+    mock_self = MagicMock()
+    mock_self.viewer.is_key_down.return_value = False
+    mock_self._viser_pending_presses = {"R"}
+    mock_self._viser_pending_lock = threading.Lock()
+
+    assert NewtonSimulator._is_key_pressed(mock_self, "R") is True
+    # One-shot: the pending press is consumed, so it doesn't stay "down".
+    assert mock_self._viser_pending_presses == set()
+    assert NewtonSimulator._is_key_pressed(mock_self, "R") is False
+
+
+def test_viser_button_click_fires_on_press_exactly_once_via_real_user_interface():
+    """End-to-end through the real UserInterface: a click is one edge-triggered
+    press, not a stuck-down key, matching a real keypress's semantics."""
+    from protomotions.simulator.base_simulator.user_interface import UserInterface
+
+    NewtonSimulator = _newton_simulator_cls()
+    ui = UserInterface()
+    press_count = 0
+
+    def on_press():
+        nonlocal press_count
+        press_count += 1
+
+    handle = ui.register_key(
+        "R", owner="test", description="Reset", on_press=on_press
+    )
+
+    mock_self = MagicMock()
+    mock_self.viewer.is_key_down.return_value = False
+    mock_self._viser_pending_presses = set()
+    mock_self._viser_pending_lock = threading.Lock()
+
+    # Simulate a viser button click (as done from _add_viser_key_button's
+    # on_click closure) landing in the pending set from another thread.
+    with mock_self._viser_pending_lock:
+        mock_self._viser_pending_presses.add("R")
+
+    ui.begin_step()
+    ui.handle_key_event("R", pressed=NewtonSimulator._is_key_pressed(mock_self, "R"))
+    assert press_count == 1
+    assert handle.consume() is True
+
+    # Next frame: no viewer key-down and no new click, so it releases cleanly.
+    ui.begin_step()
+    ui.handle_key_event("R", pressed=NewtonSimulator._is_key_pressed(mock_self, "R"))
+    assert press_count == 1  # no repeated fire
+    assert handle.consume() is False
 
 
 def test_viewer_viser_matches_expected_upstream_api():
