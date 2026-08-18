@@ -244,6 +244,23 @@ For full installation details, see the `Newton Installation Guide <https://newto
    wheel and compiles from source, which can take 10-20 minutes. Python 3.11+ has prebuilt
    wheels and installs instantly.
 
+**Visualization**: by default, running non-headless (``--headless False``) opens a native
+OpenGL window, which requires a local display or X11 forwarding. On a remote/headless
+machine, you can instead use Newton's browser-based `viser <https://viser.studio/>`__ viewer:
+
+.. code-block:: bash
+
+   python protomotions/inference_agent.py --simulator newton --headless False \
+     --overrides simulator.viewer_backend=viser simulator.viewer_port=8080 ...
+
+This starts a local web server (``http://localhost:8080`` by default) instead of opening a
+window — view it from any browser, including over an SSH port-forward. Set
+``simulator.viewer_share=True`` to also get a publicly shareable URL. The viser viewer has a
+few known gaps versus the native ``gl`` viewer: keyboard shortcuts (camera-target cycling,
+recording toggle, projectile throw, marker toggle) and mouse-drag force interaction are
+inert, and the PNG/MP4 viewport recording hotkey is unsupported (viser has its own separate
+recording format instead).
+
 MuJoCo (CPU-only)
 ~~~~~~~~~~~~~~~~~
 

@@ -58,3 +58,21 @@ class NewtonSimulatorConfig(SimulatorConfig):
     _target_: str = "protomotions.simulator.newton.simulator.NewtonSimulator"
     sim: NewtonSimParams = field(default_factory=NewtonSimParams)  # Override sim type
     w_last: bool = True  # Newton uses xyzw quaternions
+    viewer_backend: str = field(
+        default="gl",
+        metadata={"help": "Viewer backend: 'gl' (local OpenGL window) or 'viser' (browser-based, remote-friendly)."}
+    )
+    viewer_port: int = field(
+        default=8080,
+        metadata={"help": "Port for the viser web server (only used when viewer_backend='viser')."}
+    )
+    viewer_share: bool = field(
+        default=False,
+        metadata={"help": "If True, expose the viser viewer via a public share URL (only used when viewer_backend='viser')."}
+    )
+
+    def __post_init__(self):
+        super().__post_init__()
+        assert self.viewer_backend in ("gl", "viser"), (
+            f"NewtonSimulatorConfig.viewer_backend must be 'gl' or 'viser', got {self.viewer_backend!r}"
+        )

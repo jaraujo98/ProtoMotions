@@ -501,9 +501,14 @@ class NewtonSimulator(Simulator):
 
         self.viewer = None
         if not self.headless:
-            self.viewer = newton.viewer.ViewerGL()
+            if self.config.viewer_backend == "viser":
+                self.viewer = newton.viewer.ViewerViser(
+                    port=self.config.viewer_port, share=self.config.viewer_share
+                )
+            else:
+                self.viewer = newton.viewer.ViewerGL()
+                self.viewer.vsync = True
             self.viewer.set_model(self.model)
-            self.viewer.vsync = True
 
         self.state_temp = self.model.state()
         self.state_0 = self.model.state()
@@ -1265,6 +1270,7 @@ class NewtonSimulator(Simulator):
 
         self.viewer.set_camera(wp.vec3(cam_pos.tolist()), pitch, yaw)
         self._cam_prev_char_pos = char_root_pos
+        self._last_cam_pos = cam_pos
 
     def _init_keyboard(self) -> None:
         """Initializes keyboard controls."""
@@ -1291,7 +1297,13 @@ class NewtonSimulator(Simulator):
             )
             height_offset = 0
 
-        cam_pos = np.array(self.viewer.camera.pos)
+        # ViewerGL exposes a live `.camera` we can read back to respect manual
+        # free-fly drift; ViewerViser (and ViewerBase) have no such attribute,
+        # so fall back to the last position we ourselves commanded.
+        if hasattr(self.viewer, "camera"):
+            cam_pos = np.array(self.viewer.camera.pos)
+        else:
+            cam_pos = self._last_cam_pos
         cam_delta = cam_pos - self._cam_prev_char_pos
 
         new_cam_target = char_root_pos + np.array([0, 0, height_offset])
@@ -1308,10 +1320,12 @@ class NewtonSimulator(Simulator):
 
         self.viewer.set_camera(wp.vec3(new_cam_pos.tolist()), pitch, yaw)
         self._cam_prev_char_pos = char_root_pos
+        self._last_cam_pos = new_cam_pos
 
     def close(self) -> None:
         """Closes the simulator and cleans up resources."""
-        pass
+        if self.viewer is not None:
+            self.viewer.close()
 
     def _write_viewport_to_file(self, file_name: str) -> None:
         """Writes viewport to file."""
@@ -1326,6 +1340,8 @@ class NewtonSimulator(Simulator):
             else:
                 self._update_camera()
 
+            # is_key_down() defaults to False on viewer backends without real
+            # keyboard input (e.g. viser), so shortcuts simply no-op there.
             for key_name in self.user_interface.registered_key_names():
                 self.user_interface.handle_key_event(
                     key_name, pressed=self.viewer.is_key_down(key_name.lower())
@@ -1347,6 +1363,11 @@ class NewtonSimulator(Simulator):
             )
 
     def _write_viewport_to_file(self, file_name: str) -> None:
+        # get_frame() is a ViewerGL-only API; other viewer backends (e.g. viser)
+        # have their own separate recording mechanisms and don't support this.
+        if not hasattr(self.viewer, "get_frame"):
+            return
+
         import matplotlib.pyplot as plt
 
         viewport = self.viewer.get_frame().numpy()  # [H, W, 3] as uint8
