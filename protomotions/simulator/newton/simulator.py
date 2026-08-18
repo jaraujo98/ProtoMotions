@@ -995,6 +995,26 @@ class NewtonSimulator(Simulator):
         """
         return None
 
+    def reset_envs(
+        self,
+        new_states: ResetState,
+        new_object_states: Optional[ObjectState] = None,
+        env_ids: Optional[torch.Tensor] = None,
+    ) -> None:
+        super().reset_envs(new_states, new_object_states, env_ids)
+
+        if not self.headless and self.config.viewer_backend == "viser":
+            # Viser doesn't auto-follow the character (see render()'s camera
+            # dispatch), so a reset that respawns the currently-tracked env
+            # far from its previous position would otherwise leave the view
+            # stale until the user manually clicks "Focus Camera". Request
+            # the same recenter automatically, but only if the reset actually
+            # touches the env the camera is tracking.
+            if env_ids is None:
+                env_ids = torch.arange(self.num_envs, device=self.device)
+            if bool((env_ids == self._camera_target["env"]).any()):
+                self._viser_recenter_requested = True
+
     def _get_simulator_bodies_state(
         self, env_ids: Optional[torch.Tensor] = None
     ) -> RobotState:

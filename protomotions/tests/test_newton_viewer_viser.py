@@ -294,6 +294,91 @@ def test_render_calls_update_camera_for_viewers_with_camera_attr():
     mock_self._update_camera.assert_called_once_with()
 
 
+def _make_reset_envs_mock_self(viewer_backend, headless, camera_target_env=0, num_envs=4):
+    mock_self = MagicMock()
+    mock_self.__class__ = _newton_simulator_cls()
+    mock_self.headless = headless
+    mock_self.config.viewer_backend = viewer_backend
+    mock_self.num_envs = num_envs
+    mock_self.device = torch.device("cpu")
+    mock_self._camera_target = {"env": camera_target_env, "element": 0}
+    mock_self._viser_recenter_requested = False
+    return mock_self
+
+
+def test_reset_envs_requests_recenter_when_tracked_env_is_reset():
+    NewtonSimulator = _newton_simulator_cls()
+    from protomotions.simulator.base_simulator.simulator import Simulator
+
+    mock_self = _make_reset_envs_mock_self(
+        "viser", headless=False, camera_target_env=2
+    )
+    new_states = MagicMock()
+    new_object_states = MagicMock()
+    env_ids = torch.tensor([1, 2, 3])
+
+    with patch.object(Simulator, "reset_envs") as mock_super_reset:
+        NewtonSimulator.reset_envs(mock_self, new_states, new_object_states, env_ids)
+
+    mock_super_reset.assert_called_once_with(new_states, new_object_states, env_ids)
+    assert mock_self._viser_recenter_requested is True
+
+
+def test_reset_envs_does_not_recenter_for_untracked_env():
+    NewtonSimulator = _newton_simulator_cls()
+    from protomotions.simulator.base_simulator.simulator import Simulator
+
+    mock_self = _make_reset_envs_mock_self(
+        "viser", headless=False, camera_target_env=0
+    )
+    env_ids = torch.tensor([1, 2, 3])
+
+    with patch.object(Simulator, "reset_envs"):
+        NewtonSimulator.reset_envs(mock_self, MagicMock(), env_ids=env_ids)
+
+    assert mock_self._viser_recenter_requested is False
+
+
+def test_reset_envs_recenters_when_env_ids_is_none():
+    NewtonSimulator = _newton_simulator_cls()
+    from protomotions.simulator.base_simulator.simulator import Simulator
+
+    mock_self = _make_reset_envs_mock_self(
+        "viser", headless=False, camera_target_env=3, num_envs=4
+    )
+
+    with patch.object(Simulator, "reset_envs"):
+        NewtonSimulator.reset_envs(mock_self, MagicMock(), env_ids=None)
+
+    assert mock_self._viser_recenter_requested is True
+
+
+def test_reset_envs_ignores_gl_backend():
+    NewtonSimulator = _newton_simulator_cls()
+    from protomotions.simulator.base_simulator.simulator import Simulator
+
+    mock_self = _make_reset_envs_mock_self("gl", headless=False, camera_target_env=0)
+    env_ids = torch.tensor([0])
+
+    with patch.object(Simulator, "reset_envs"):
+        NewtonSimulator.reset_envs(mock_self, MagicMock(), env_ids=env_ids)
+
+    assert mock_self._viser_recenter_requested is False
+
+
+def test_reset_envs_ignores_headless():
+    NewtonSimulator = _newton_simulator_cls()
+    from protomotions.simulator.base_simulator.simulator import Simulator
+
+    mock_self = _make_reset_envs_mock_self("viser", headless=True, camera_target_env=0)
+    env_ids = torch.tensor([0])
+
+    with patch.object(Simulator, "reset_envs"):
+        NewtonSimulator.reset_envs(mock_self, MagicMock(), env_ids=env_ids)
+
+    assert mock_self._viser_recenter_requested is False
+
+
 def test_update_camera_reads_live_camera_pos():
     NewtonSimulator = _newton_simulator_cls()
     mock_self = MagicMock()

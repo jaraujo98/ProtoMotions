@@ -256,14 +256,17 @@ machine, you can instead use Newton's browser-based `viser <https://viser.studio
 This starts a local web server (``http://localhost:8080`` by default) instead of opening a
 window — view it from any browser, including over an SSH port-forward. Set
 ``simulator.viewer_share=True`` to also get a publicly shareable URL. The viser viewer has a
-few known gaps versus the native ``gl`` viewer: keyboard shortcuts (camera-target cycling,
-recording toggle, projectile throw, marker toggle) and mouse-drag force interaction are
-inert, and the PNG/MP4 viewport recording hotkey is unsupported (viser has its own separate
-recording format instead). The camera is positioned once when the viewer connects and is
-then fully under your browser's own orbit/zoom/pan controls — unlike ``gl``, it does not
-automatically follow the character. If the character ends up out of view (e.g. it spawns
-far from the origin, or the position changes on an env reset), click the "Focus Camera"
-button in the viser GUI panel to snap the view back onto it.
+few known gaps versus the native ``gl`` viewer: mouse-drag force interaction is inert, and
+the PNG/MP4 viewport recording hotkey is unsupported (viser has its own separate recording
+format instead) — but keyboard shortcuts (camera-target cycling, recording toggle,
+projectile throw, marker toggle) are still available as clickable buttons in the "Keyboard
+Shortcuts" panel, since viser has no real keyboard capture to bind them to directly.
+
+The camera is positioned once when the viewer connects and is then fully under your
+browser's own orbit/zoom/pan controls — unlike ``gl``, it does not continuously follow the
+character. It does automatically recenter on the character whenever the env it's tracking
+resets (e.g. a new spawn far from the previous position); to snap the view back onto it at
+any other time, click the "Focus Camera" button in the viser GUI panel.
 
 MuJoCo (CPU-only)
 ~~~~~~~~~~~~~~~~~
