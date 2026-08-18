@@ -35,6 +35,50 @@ def _newton_config_classes():
     return NewtonSimulatorConfig, NewtonSimParams
 
 
+def _build_real_simulator(viewer_backend, num_envs=1):
+    """Construct a real (unmocked) NewtonSimulator, headless for speed --
+    _create_simulation() builds the ground plane regardless of headless, so
+    this doesn't need an actual display/viewer to exercise that logic."""
+    NewtonSimulator = _newton_simulator_cls()
+    NewtonSimulatorConfig, NewtonSimParams = _newton_config_classes()
+    from protomotions.components.scene_lib import SceneLib
+    from protomotions.components.terrains.config import TerrainConfig
+    from protomotions.components.terrains.terrain import Terrain
+    from protomotions.robot_configs.factory import robot_config
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    robot_cfg = robot_config("g1")
+    terrain_config = TerrainConfig(
+        map_length=20.0,
+        map_width=20.0,
+        border_size=40.0,
+        num_levels=1,
+        num_terrains=1,
+        terrain_proportions=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+        horizontal_scale=0.1,
+        vertical_scale=0.005,
+    )
+    terrain = Terrain(config=terrain_config, num_envs=num_envs, device=device)
+    scene_lib = SceneLib.empty(num_envs=num_envs, device=str(device), terrain=terrain)
+
+    sim_config = NewtonSimulatorConfig(
+        num_envs=num_envs,
+        headless=True,
+        sim=NewtonSimParams(fps=30, decimation=1),
+        experiment_name="ground_plane_test",
+        viewer_backend=viewer_backend,
+    )
+    simulator = NewtonSimulator(
+        config=sim_config,
+        robot_config=robot_cfg,
+        terrain=terrain,
+        device=device,
+        scene_lib=scene_lib,
+    )
+    simulator._initialize_with_markers({})
+    return simulator
+
+
 def test_viewer_backend_config_defaults_to_gl():
     NewtonSimulatorConfig, NewtonSimParams = _newton_config_classes()
 
@@ -76,6 +120,35 @@ def test_viewer_backend_rejects_invalid_value():
             experiment_name="t",
             viewer_backend="not_a_backend",
         )
+
+
+def _ground_plane_scale(simulator):
+    idx = simulator.model.shape_label.index("ground_plane")
+    return simulator.model.shape_scale.numpy()[idx]
+
+
+def test_ground_plane_is_generously_sized_for_viser_backend():
+    """ViewerViser auto-sizes Newton's "infinite" (zero-scale) ground plane
+    from a single world's extents, which can leave the floor invisible in
+    multi-env layouts -- for viser we give it an explicit large finite size
+    instead."""
+    simulator = _build_real_simulator(viewer_backend="viser", num_envs=2)
+
+    width, length, _ = _ground_plane_scale(simulator)
+
+    assert width == 1000.0
+    assert length == 1000.0
+
+
+def test_ground_plane_stays_infinite_for_gl_backend():
+    """ViewerGL already renders the "infinite" zero-scale plane correctly,
+    so the gl/default path must be untouched by the viser-only workaround."""
+    simulator = _build_real_simulator(viewer_backend="gl", num_envs=2)
+
+    width, length, _ = _ground_plane_scale(simulator)
+
+    assert width == 0.0
+    assert length == 0.0
 
 
 def test_close_closes_viewer_when_present():

@@ -239,14 +239,32 @@ class NewtonSimulator(Simulator):
         builder = newton.ModelBuilder()
         builder.replicate(self.robot, self.num_envs)
 
+        ground_cfg = None
         if self.terrain is not None:
             ground_cfg = newton.ModelBuilder.ShapeConfig(
                 mu=self.terrain.sim_config.static_friction,
                 restitution=self.terrain.sim_config.restitution,
             )
-            builder.add_ground_plane(cfg=ground_cfg)
+
+        if self.config.viewer_backend == "viser":
+            # ViewerViser (unlike ViewerGL) auto-sizes Newton's "infinite"
+            # (zero-scale) ground plane from a single world's bounding-box
+            # extents, which can be far too small for replicated multi-env
+            # layouts and leaves the floor effectively invisible. Give it an
+            # explicit, generously large finite size instead -- collision-wise
+            # this is still enormous relative to any simulated environment,
+            # so it behaves as "infinite" in practice, and ViewerGL's own
+            # always-big-enough rendering fallback is unaffected since it
+            # never uses this path.
+            builder.add_shape_plane(
+                plane=(*builder.up_vector, 0.0),
+                width=1000.0,
+                length=1000.0,
+                cfg=ground_cfg,
+                label="ground_plane",
+            )
         else:
-            builder.add_ground_plane()
+            builder.add_ground_plane(cfg=ground_cfg)
 
         self.model = builder.finalize()
         self.model.set_gravity((0.0, 0.0, -9.81))
